@@ -2,7 +2,7 @@
 //*****************************************************************************
 
 #include "statdialog.h"
-#include "blocknetapp.h"
+#include "xbridgeapp.h"
 
 #include <QTextEdit>
 #include <QLineEdit>
@@ -70,7 +70,7 @@ void StatDialog::setupUi()
 
     setLayout(vbox);
 
-    BlocknetApp * app = qobject_cast<BlocknetApp *>(qApp);
+    XBridgeApp * app = qobject_cast<XBridgeApp *>(qApp);
     if (!app)
     {
         return;
@@ -86,7 +86,7 @@ void StatDialog::setupUi()
 //*****************************************************************************
 void StatDialog::onSearch()
 {
-    BlocknetApp * app = qobject_cast<BlocknetApp *>(qApp);
+    XBridgeApp * app = qobject_cast<XBridgeApp *>(qApp);
     if (!app)
     {
         return;
@@ -99,11 +99,11 @@ void StatDialog::onSearch()
 //*****************************************************************************
 void StatDialog::onSend()
 {
-    BlocknetApp * app = qobject_cast<BlocknetApp *>(qApp);
+    XBridgeApp * app = qobject_cast<XBridgeApp *>(qApp);
     if (!app)
     {
         return;
     }
 
-    app->onSend(m_searchText->text().toStdString(), "test message");
+    // app->onSend(m_searchText->text().toStdString(), "test message");
 }

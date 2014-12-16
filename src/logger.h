@@ -7,7 +7,11 @@
 #include <sstream>
 #include <boost/pool/pool_alloc.hpp>
 
-#define DEBUG_TRACE() (LOG() << __FUNCTION__)
+#define WARN()  LOG('W')
+#define ERR()   LOG('E')
+#define TRACE() LOG('T')
+
+#define DEBUG_TRACE() (TRACE() << __FUNCTION__)
 // #define DEBUG_TRACE()
 
 //******************************************************************************
@@ -16,11 +20,11 @@ class LOG : public std::basic_stringstream<char, std::char_traits<char>,
                                         boost::pool_allocator<char> > // std::stringstream
 {
 public:
-    LOG();
+    LOG(const char reason = 'I');
     virtual ~LOG();
 
-//private:
-//    const std::string makeFileName() const;
+private:
+    char m_r;
 };
 
 #endif // LOGGER_H

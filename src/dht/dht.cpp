@@ -78,6 +78,9 @@ THE SOFTWARE.
   #define DELTA_EPOCH_IN_MICROSECS  11644473600000000ULL
 #endif
 
+// TODO remove
+#include <QDebug>
+
 struct timezone
 {
   int  tz_minuteswest; /* minutes W of Greenwich */
@@ -1510,6 +1513,10 @@ storage_store(const unsigned char *id,
 //*****************************************************************************
 int dht_storage_store(const unsigned char * id, const sockaddr *sa, unsigned short port)
 {
+    // TODO sizeof (id)
+    qDebug() << "new entity";
+    qDebug() << util::base64_encode(std::string((char *)id, 20)).c_str();
+
     return storage_store(id, sa, port);
 }
 
@@ -2528,13 +2535,11 @@ dht_ping_node(struct sockaddr *sa, int salen)
 
 //*****************************************************************************
 //*****************************************************************************
-int dht_send_message(const unsigned char * id, const char * message, const int length)
+int dht_send_message(const unsigned char * id, const unsigned char * message, const int length)
 {
     // make message
-    std::string msg(message, length);
-
-    // TODO base64 encode ?
-    // msg = util::base64_encode(msg);
+    std::string msg((const char *)message, length);
+    msg = util::base64_encode(msg);
 
     char buf[512];
     int i = 0;

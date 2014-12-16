@@ -17,12 +17,14 @@ boost::mutex logLocker;
 
 //******************************************************************************
 //******************************************************************************
-LOG::LOG()
+LOG::LOG(const char reason)
     : std::basic_stringstream<char, std::char_traits<char>,
                     boost::pool_allocator<char> >()
+    , m_r(reason)
 {
-    *this << "\n" << boost::posix_time::second_clock::local_time()
-            << " [0x" << boost::this_thread::get_id() << "] ";
+    *this << "\n" << "[" << (char)std::toupper(m_r) << "] "
+          << boost::posix_time::second_clock::local_time()
+          << " [0x" << boost::this_thread::get_id() << "] ";
 }
 
 //******************************************************************************

@@ -2,7 +2,7 @@
 //*****************************************************************************
 
 #include "statdialog.h"
-#include "blocknetapp.h"
+#include "xbridgeapp.h"
 
 #include <QString>
 // #include <QDateTime>
@@ -61,7 +61,7 @@ void logOutput(QtMsgType type,
 
 //    fprintf(stderr, "%s %s\n", dt.toLocal8Bit().constData(), msg.toLocal8Bit().constData());
 
-    BlocknetApp * app = qobject_cast<BlocknetApp *>(qApp);
+    XBridgeApp * app = qobject_cast<XBridgeApp *>(qApp);
     if (app)
     {
         app->logMessage(msg);
@@ -74,7 +74,7 @@ void logOutput(QtMsgType type,
 //*****************************************************************************
 int main(int argc, char *argv[])
 {
-    BlocknetApp a(argc, argv);
+    XBridgeApp a(argc, argv);
 
     qInstallMessageHandler(logOutput);
 
