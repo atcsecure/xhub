@@ -79,6 +79,7 @@ THE SOFTWARE.
 #endif
 
 // TODO remove
+#include "../xbridgeapp.h"
 #include <QDebug>
 
 struct timezone
@@ -2327,6 +2328,29 @@ dht_periodic(const unsigned char * buf, size_t buflen,
         case MESSAGE:
             debugf("Message received!\n");
             new_node(id, from, fromlen, 1);
+
+            char * ptr = strstr((char *)buf, ":message")+8;
+            size_t len = atoi(ptr);
+            while (isdigit(*ptr))
+            {
+                ++ptr;
+            }
+
+            // :
+            ++ptr;
+
+            std::string message(ptr, ptr+len);
+            message = util::base64_decode(message);
+
+            std::vector<unsigned char> addr;
+            std::copy(message.begin(), message.begin()+20, std::back_inserter(addr));
+
+            std::vector<unsigned char> vmessage;
+            std::copy(message.begin(), message.end(), std::back_inserter(vmessage));
+
+            XBridgeApp * app = qobject_cast<XBridgeApp *>(qApp);
+            app->onXChatMessageReceived(addr, vmessage);
+
             break;
         }
     }
@@ -2551,25 +2575,27 @@ int dht_send_message(const unsigned char * id, const unsigned char * message, co
         rc = _snprintf(buf + i, 512 - i, "1:y1:qe"); INC(i, rc, 512);
     }
 
+    struct storage * st = find_storage(id);
+    if (st)
+    {
+        // found local
+        return 0;
+    }
+
     // find peer
     search * sr = searches;
     while (sr)
     {
         if(sr->af == AF_INET && id_cmp(sr->id, id) == 0)
         {
-            break;
+            if (sr && sr->numnodes)
+            {
+                // send to
+                dht_send(buf, i, 0, (sockaddr *)&sr->nodes[0].ss, sizeof(sr->nodes[0].ss));
+                break;
+            }
         }
         sr = sr->next;
-    }
-
-    if (sr && sr->numnodes)
-    {
-        // send to
-        dht_send(buf, i, 0, (sockaddr *)&sr->nodes[0].ss, sizeof(sr->nodes[0].ss));
-    }
-    else
-    {
-        sr = 0;
     }
 
     // find peer
@@ -2578,19 +2604,14 @@ int dht_send_message(const unsigned char * id, const unsigned char * message, co
     {
         if(sr6->af == AF_INET6 && id_cmp(sr6->id, id) == 0)
         {
-            break;
+            if (sr6 && sr6->numnodes)
+            {
+                // send to
+                dht_send(buf, i, 0, (sockaddr *)&sr6->nodes[0].ss, sizeof(sr6->nodes[0].ss));
+                break;
+            }
         }
         sr6 = sr6->next;
-    }
-
-    if (sr6 && sr6->numnodes)
-    {
-        // send to
-        dht_send(buf, i, 0, (sockaddr *)&sr6->nodes[0].ss, sizeof(sr6->nodes[0].ss));
-    }
-    else
-    {
-        sr6 = 0;
     }
 
     if (!sr && !sr6)

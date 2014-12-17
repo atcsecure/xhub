@@ -8,6 +8,9 @@
 #include <thread>
 #include <chrono>
 
+#include <boost/thread.hpp>
+#include <boost/thread/mutex.hpp>
+
 #include <openssl/rand.h>
 #include <openssl/md5.h>
 
@@ -168,10 +171,25 @@ void XBridgeApp::onSearch(const std::string & id)
 
 //*****************************************************************************
 //*****************************************************************************
-void XBridgeApp::onSend(const ucharvector & id, const ucharvector & message)
+void XBridgeApp::onSend(const UcharVector & id, const UcharVector & message)
 {
     m_messages.push_back(std::make_pair(id, message));
     m_signalSend = true;
+}
+
+//*****************************************************************************
+//*****************************************************************************
+void XBridgeApp::onXChatMessageReceived(const UcharVector & id, const UcharVector & message)
+{
+    qDebug() << "received message to" << util::base64_encode(std::string((char *)&id[0], 20)).c_str();
+
+    boost::mutex::scoped_lock l(m_sessionsLock);
+    if (m_sessions.count(id))
+    {
+        // found local client
+        XBridgeSessionPtr ptr = m_sessions[id];
+        ptr->sendXChatMessage(message);
+    }
 }
 
 //*****************************************************************************
@@ -451,26 +469,46 @@ void XBridgeApp::dhtThreadProc()
             {
                 // TODO
                 // sync
-                std::list<messagepair> messages = m_messages;
+                std::list<MessagePair> messages = m_messages;
                 m_messages.clear();
 
                 while (messages.size())
                 {
-                    messagepair mpair = messages.front();
+                    MessagePair mpair = messages.front();
                     messages.pop_front();
 
                     // std::string id      = util::base64_decode(mpair.first);
                     // std ::string message = mpair.second;
 
-                    if (dht_send_message(&mpair.first[0], &mpair.second[0], mpair.second.size()) != 0)
-                    {
-                        std::string _id;
-                        std::copy(mpair.first.begin(), mpair.first.end(), std::back_inserter(_id));
+                    bool isFoundLocal = false;
 
-                        // return message back and try search
-                        m_messages.push_back(mpair);
-                        m_searchStrings.push_back(util::base64_encode(_id));
-                        m_signalSearch = true;
+                    // check local
+                    {
+                        boost::mutex::scoped_lock l(m_sessionsLock);
+                        if (m_sessions.count(mpair.first))
+                        {
+                            // found local client
+                            XBridgeSessionPtr ptr = m_sessions[mpair.first];
+                            ptr->sendXChatMessage(mpair.second);
+
+                            isFoundLocal = true;
+                        }
+                    }
+
+                    if (!isFoundLocal)
+                    {
+                        // not local
+                        if (dht_send_message(&mpair.first[0], &mpair.second[0], mpair.second.size()) != 0)
+                        {
+                            // not send - go to search peer
+                            std::string _id;
+                            std::copy(mpair.first.begin(), mpair.first.end(), std::back_inserter(_id));
+
+                            // return message back and try search
+                            m_messages.push_back(mpair);
+                            m_searchStrings.push_back(util::base64_encode(_id));
+                            m_signalSearch = true;
+                        }
                     }
                 }
             }
@@ -577,13 +615,39 @@ void XBridgeApp::bridgeThreadProc()
 
 //*****************************************************************************
 //*****************************************************************************
-void XBridgeApp::storageStore(const unsigned char * data)
+void XBridgeApp::storageStore(XBridgeSessionPtr session, const unsigned char * data)
 {
     if (!data)
     {
         return;
     }
 
+    std::vector<unsigned char> id(data, data+20);
+
+    // TODO :)
+    // if (m_sessions.contains(id))
+
+    boost::mutex::scoped_lock l(m_sessionsLock);
+    m_sessions[id] = session;
+
     dht_storage_store(data, (sockaddr *)&m_sin, m_dhtPort);
     dht_storage_store(data, (sockaddr *)&m_sin6, m_dhtPort);
+}
+
+//*****************************************************************************
+//*****************************************************************************
+void XBridgeApp::storageClean(XBridgeSessionPtr session)
+{
+    boost::mutex::scoped_lock l(m_sessionsLock);
+    for (auto i = m_sessions.begin(); i != m_sessions.end();)
+    {
+        if (i->second == session)
+        {
+            m_sessions.erase(i++);
+        }
+        else
+        {
+            ++i;
+        }
+    }
 }

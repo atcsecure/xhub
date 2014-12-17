@@ -5,6 +5,7 @@
 #define XBRIDGEAPP_H
 
 #include "xbridge.h"
+#include "xbridgesession.h"
 
 #include <QApplication>
 
@@ -38,13 +39,15 @@ public:
 
     void logMessage(const QString & msg);
 
-    void storageStore(const unsigned char * data);
+    void storageStore(XBridgeSessionPtr session, const unsigned char * data);
+    void storageClean(XBridgeSessionPtr session);
 
 public slots:
     void onGenerate();
     void onDump();
     void onSearch(const std::string & id);
     void onSend(const std::vector<unsigned char> & id, const std::vector<unsigned char> & message);
+    void onXChatMessageReceived(const std::vector<unsigned char> & id, const std::vector<unsigned char> & message);
 
 public:
     static void sleep(const unsigned int umilliseconds);
@@ -63,11 +66,11 @@ private:
     std::atomic<bool> m_signalSearch;
     std::atomic<bool> m_signalSend;
 
-    typedef std::vector<unsigned char> ucharvector;
-    typedef std::pair<ucharvector, ucharvector> messagepair;
+    typedef std::vector<unsigned char> UcharVector;
+    typedef std::pair<UcharVector, UcharVector> MessagePair;
 
     std::list<std::string> m_searchStrings;
-    std::list<messagepair> m_messages;
+    std::list<MessagePair> m_messages;
 
     const bool        m_ipv4;
     const bool        m_ipv6;
@@ -80,6 +83,10 @@ private:
 
     std::thread       m_bridgeThread;
     XBridge m_bridge;
+
+    boost::mutex m_sessionsLock;
+    typedef std::map<std::vector<unsigned char>, XBridgeSessionPtr> SessionMap;
+    SessionMap m_sessions;
 };
 
 #endif // XBRIDGEAPP_H

@@ -54,6 +54,9 @@ void XBridgeSession::disconnect()
     m_socket->close();
 
     LOG() << "client disconnected " << m_socket.get();
+
+    XBridgeApp * app = qobject_cast<XBridgeApp *>(qApp);
+    app->storageClean(shared_from_this());
 }
 
 //*****************************************************************************
@@ -223,8 +226,27 @@ bool XBridgeSession::processAnnounceAddresses(XBridgePacketPtr packet)
     }
 
     XBridgeApp * app = qobject_cast<XBridgeApp *>(qApp);
-    app->storageStore(packet->data());
+    app->storageStore(shared_from_this(), packet->data());
     return true;
+}
+
+//*****************************************************************************
+//*****************************************************************************
+bool XBridgeSession::sendXChatMessage(const std::vector<unsigned char> & message)
+{
+    DEBUG_TRACE();
+
+    XBridgePacketPtr packet(new XBridgePacket(xbcXChatMessage));
+    packet->setData(message);
+
+    boost::system::error_code error;
+    m_socket->send(boost::asio::buffer(packet->header(), packet->allSize()), 0, error);
+    if (error)
+    {
+        ERR() << "packet send error " << PrintErrorCode(error) << __FUNCTION__;
+    }
+
+    return false;
 }
 
 //*****************************************************************************

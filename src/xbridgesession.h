@@ -8,6 +8,7 @@
 #include "xbridgepacket.h"
 #include "FastDelegate.h"
 
+#include <memory>
 #include <boost/noncopyable.hpp>
 
 //*****************************************************************************
@@ -20,6 +21,8 @@ public:
     XBridgeSession();
 
     void start(XBridge::SocketPtr socket);
+
+    bool sendXChatMessage(const std::vector<unsigned char> & message);
 
 private:
     void disconnect();
