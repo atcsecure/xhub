@@ -16,7 +16,8 @@ class XBridge
     enum
     {
         THREAD_COUNT = 2,
-        LISTEN_PORT = 30330
+        LISTEN_PORT = 30330,
+        TIMER_INTERVAL = 5
     };
 
     typedef std::shared_ptr<boost::asio::io_service>      IoServicePtr;
@@ -37,11 +38,18 @@ private:
     void accept(XBridge::SocketPtr socket,
                 const boost::system::error_code & error);
 
+    void onTimer();
+
 private:
     std::deque<IoServicePtr>                        m_services;
     std::deque<boost::asio::io_service::work>       m_works;
     boost::thread_group                             m_threads;
     std::shared_ptr<boost::asio::ip::tcp::acceptor> m_acceptor;
+
+    boost::asio::io_service                         m_timerIo;
+    boost::asio::io_service::work                   m_timerIoWork;
+    boost::thread                                   m_timerThread;
+    boost::asio::deadline_timer                     m_timer;
 };
 
 #endif // XBRIDGE_H

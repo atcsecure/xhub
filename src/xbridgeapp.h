@@ -6,6 +6,7 @@
 
 #include "xbridge.h"
 #include "xbridgesession.h"
+#include "util/uint256.h"
 
 #include <QApplication>
 
@@ -24,7 +25,7 @@ class XBridgeApp : public QApplication
                          const unsigned char * info_hash,
                          const void * data, size_t data_len);
 
-    Q_OBJECT
+    Q_OBJECT;
 
 public:
     XBridgeApp(int argc, char *argv[]);
@@ -34,20 +35,37 @@ signals:
     void showLogMessage(const QString & msg);
 
 public:
+    const unsigned char * myid() const { return m_myid; }
+    const std::string path() const     { return m_path; }
+
     bool initDht();
     bool stopDht();
 
     void logMessage(const QString & msg);
 
+    // store session addresses in local table
     void storageStore(XBridgeSessionPtr session, const unsigned char * data);
+    // clear local table
     void storageClean(XBridgeSessionPtr session);
 
 public slots:
+    // generate new id
     void onGenerate();
+    // dump local table
     void onDump();
+    // search id
     void onSearch(const std::string & id);
+    // send messave via xbridge
+    void onSend(const std::vector<unsigned char> & message);
+    void onSend(const XBridgePacketPtr packet);
     void onSend(const std::vector<unsigned char> & id, const std::vector<unsigned char> & message);
-    void onXChatMessageReceived(const std::vector<unsigned char> & id, const std::vector<unsigned char> & message);
+    void onSend(const std::vector<unsigned char> & id, const XBridgePacketPtr packet);
+    // call when message from xbridge network received
+    void onMessageReceived(const std::vector<unsigned char> & id, const std::vector<unsigned char> & message);
+    // broadcast message
+    void onBroadcastReceived(const std::vector<unsigned char> & message);
+    // broadcast send list of wallets
+    void onSendListOfWallets();
 
 public:
     static void sleep(const unsigned int umilliseconds);
@@ -57,6 +75,10 @@ private:
     void bridgeThreadProc();
 
 private:
+    unsigned char     m_myid[20];
+
+    std::string       m_path;
+
     std::thread       m_dhtThread;
     std::atomic<bool> m_dhtStarted;
     std::atomic<bool> m_dhtStop;
@@ -87,6 +109,10 @@ private:
     boost::mutex m_sessionsLock;
     typedef std::map<std::vector<unsigned char>, XBridgeSessionPtr> SessionMap;
     SessionMap m_sessions;
+
+    boost::mutex m_messagesLock;
+    typedef std::set<uint256> ProcessedMessages;
+    ProcessedMessages m_processedMessages;
 };
 
 #endif // XBRIDGEAPP_H

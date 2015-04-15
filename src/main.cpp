@@ -3,6 +3,8 @@
 
 #include "statdialog.h"
 #include "xbridgeapp.h"
+#include "xbridgeexchange.h"
+#include "util/settings.h"
 
 #include <QString>
 // #include <QDateTime>
@@ -12,10 +14,16 @@
 
 //*****************************************************************************
 //*****************************************************************************
+#if (QT_VERSION >= QT_VERSION_CHECK(5, 0, 0))
 void logOutput(QtMsgType type,
                const QMessageLogContext & /*context*/,
                const QString &msg)
 {
+#else
+void logOutput(QtMsgType type, const char * _msg)
+{
+    QString msg(_msg);
+#endif
     static bool recursion = false;
     if (recursion)
     {
@@ -74,16 +82,26 @@ void logOutput(QtMsgType type,
 //*****************************************************************************
 int main(int argc, char *argv[])
 {
+    Settings::instance().init(std::string(*argv) + ".conf");
+
     XBridgeApp a(argc, argv);
 
+#if (QT_VERSION >= QT_VERSION_CHECK(5, 0, 0))
     qInstallMessageHandler(logOutput);
-
-    a.initDht();
+#else
+    qInstallMsgHandler(logOutput);
+#endif
 
     StatDialog w;
     a.connect(&a, SIGNAL(showLogMessage(const QString &)),
               &w, SLOT(onLogMessage(const QString &)));
     w.show();
+
+    // init xbridge network
+    a.initDht();
+
+    // init exchange
+    XBridgeExchange::instance().init();
 
     int retcode = a.exec();
 

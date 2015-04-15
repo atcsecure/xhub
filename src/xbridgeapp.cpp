@@ -2,7 +2,8 @@
 //*****************************************************************************
 
 #include "xbridgeapp.h"
-#include "util.h"
+#include "xbridgeexchange.h"
+#include "util/util.h"
 #include "dht/dht.h"
 
 #include <thread>
@@ -10,6 +11,7 @@
 
 #include <boost/thread.hpp>
 #include <boost/thread/mutex.hpp>
+#include <boost/algorithm/string.hpp>
 
 #include <openssl/rand.h>
 #include <openssl/md5.h>
@@ -17,11 +19,13 @@
 #include <QDebug>
 #include <QByteArray>
 #include <QTimer>
+#include <QStringList>
 
 //*****************************************************************************
 //*****************************************************************************
 XBridgeApp::XBridgeApp(int argc, char *argv[])
     : QApplication(argc, argv)
+    , m_path(std::string(*argv))
     , m_signalGenerate(false)
     , m_signalDump(false)
     , m_signalSearch(false)
@@ -171,6 +175,25 @@ void XBridgeApp::onSearch(const std::string & id)
 
 //*****************************************************************************
 //*****************************************************************************
+void XBridgeApp::onSend(const std::vector<unsigned char> & message)
+{
+    m_messages.push_back(std::make_pair(std::vector<unsigned char>(), message));
+    m_signalSend = true;
+}
+
+//*****************************************************************************
+//*****************************************************************************
+void XBridgeApp::onSend(const XBridgePacketPtr packet)
+{
+    UcharVector v;
+    std::copy(packet->header(), packet->header()+packet->allSize(), std::back_inserter(v));
+    onSend(v);
+}
+
+//*****************************************************************************
+// send packet to xbridge network to specified id,
+// or broadcast, when id is empty
+//*****************************************************************************
 void XBridgeApp::onSend(const UcharVector & id, const UcharVector & message)
 {
     m_messages.push_back(std::make_pair(id, message));
@@ -178,8 +201,16 @@ void XBridgeApp::onSend(const UcharVector & id, const UcharVector & message)
 }
 
 //*****************************************************************************
+void XBridgeApp::onSend(const std::vector<unsigned char> & id, const XBridgePacketPtr packet)
+{
+    UcharVector v;
+    std::copy(packet->header(), packet->header()+packet->allSize(), std::back_inserter(v));
+    onSend(id, v);
+}
+
 //*****************************************************************************
-void XBridgeApp::onXChatMessageReceived(const UcharVector & id, const UcharVector & message)
+//*****************************************************************************
+void XBridgeApp::onMessageReceived(const UcharVector & id, const UcharVector & message)
 {
     qDebug() << "received message to" << util::base64_encode(std::string((char *)&id[0], 20)).c_str();
 
@@ -188,8 +219,52 @@ void XBridgeApp::onXChatMessageReceived(const UcharVector & id, const UcharVecto
     {
         // found local client
         XBridgeSessionPtr ptr = m_sessions[id];
-        ptr->sendXChatMessage(message);
+        ptr->sendXBridgeMessage(message);
     }
+}
+
+//*****************************************************************************
+//*****************************************************************************
+void XBridgeApp::onBroadcastReceived(const std::vector<unsigned char> & message)
+{
+    qDebug() << "received broadcast message";
+
+    {
+        boost::mutex::scoped_lock l(m_messagesLock);
+        if (!m_processedMessages.insert(util::hash(message.begin(), message.end())).second)
+        {
+            // already processed
+            return;
+        }
+
+        // process message
+        XBridgePacketPtr packet(new XBridgePacket);
+        packet->copyFrom(message);
+
+        XBridgeSessionPtr ptr(new XBridgeSession);
+        ptr->processPacket(packet);
+    }
+
+    // relay message
+    dht_send_broadcast(&message[0], message.size());
+}
+
+//*****************************************************************************
+//*****************************************************************************
+void XBridgeApp::onSendListOfWallets()
+{
+    XBridgeExchange & e = XBridgeExchange::instance();
+    std::vector<StringPair> wallets = e.listOfWallets();
+    std::vector<std::string> list;
+    for (std::vector<StringPair>::iterator i = wallets.begin(); i != wallets.end(); ++i)
+    {
+        list.push_back(i->first + '|' + i->second);
+    }
+
+    XBridgePacketPtr packet(new XBridgePacket(xbcExchangeWallets));
+    packet->setData(boost::algorithm::join(list, "|"));
+
+    onSend(packet);
 }
 
 //*****************************************************************************
@@ -244,10 +319,10 @@ void XBridgeApp::dhtThreadProc()
     qDebug() << "started";
 
     // generate random id
-    unsigned char myid[20];
-    dht_random_bytes(myid, sizeof(myid));
-    qDebug() << "generate my id";
-    qDebug() << util::base64_encode(std::string((char *)myid, sizeof(myid))).c_str();
+    dht_random_bytes(m_myid, sizeof(m_myid));
+    qDebug() << "generated id <"
+             << util::base64_encode(std::string((char *)m_myid, sizeof(m_myid))).c_str()
+             << ">";
 
     // init s4
     int s4 = m_ipv4 ? socket(PF_INET, SOCK_DGRAM, 0) : -1;
@@ -314,7 +389,7 @@ void XBridgeApp::dhtThreadProc()
         return;
     }
 
-    rc = dht_init(s4, s6, myid, (unsigned char*)"JC\0\0");
+    rc = dht_init(s4, s6, m_myid, (unsigned char*)"BT\0\0");
     if (rc < 0)
     {
         qDebug() << "dht_init error";
@@ -463,7 +538,7 @@ void XBridgeApp::dhtThreadProc()
 
         if (m_signalSend)
         {
-            qDebug() << "sendind";
+            // qDebug() << "sendind";
 
             if (m_messages.size())
             {
@@ -480,34 +555,53 @@ void XBridgeApp::dhtThreadProc()
                     // std::string id      = util::base64_decode(mpair.first);
                     // std ::string message = mpair.second;
 
-                    bool isFoundLocal = false;
-
-                    // check local
+                    // check broadcast
+                    if (mpair.first.empty())
                     {
-                        boost::mutex::scoped_lock l(m_sessionsLock);
-                        if (m_sessions.count(mpair.first))
+                        // send to all local clients
                         {
-                            // found local client
-                            XBridgeSessionPtr ptr = m_sessions[mpair.first];
-                            ptr->sendXChatMessage(mpair.second);
-
-                            isFoundLocal = true;
+                            boost::mutex::scoped_lock l(m_sessionsLock);
+                            for (SessionMap::iterator i = m_sessions.begin(); i != m_sessions.end(); ++i)
+                            {
+                                i->second->sendXBridgeMessage(mpair.second);
+                            }
                         }
+
+                        // TODO send to xbridge network
+                        // dht_send_broadcast(&mpair.second[0], mpair.second.size());
                     }
 
-                    if (!isFoundLocal)
+                    else
                     {
-                        // not local
-                        if (dht_send_message(&mpair.first[0], &mpair.second[0], mpair.second.size()) != 0)
-                        {
-                            // not send - go to search peer
-                            std::string _id;
-                            std::copy(mpair.first.begin(), mpair.first.end(), std::back_inserter(_id));
+                        bool isFoundLocal = false;
 
-                            // return message back and try search
-                            m_messages.push_back(mpair);
-                            m_searchStrings.push_back(util::base64_encode(_id));
-                            m_signalSearch = true;
+                        // check local
+                        {
+                            boost::mutex::scoped_lock l(m_sessionsLock);
+                            if (m_sessions.count(mpair.first))
+                            {
+                                // found local client
+                                XBridgeSessionPtr ptr = m_sessions[mpair.first];
+                                ptr->sendXBridgeMessage(mpair.second);
+
+                                isFoundLocal = true;
+                            }
+                        }
+
+                        if (!isFoundLocal)
+                        {
+                            // not local
+                            if (dht_send_message(&mpair.first[0], &mpair.second[0], mpair.second.size()) != 0)
+                            {
+                                // not send - go to search peer
+                                std::string _id;
+                                std::copy(mpair.first.begin(), mpair.first.end(), std::back_inserter(_id));
+
+                                // return message back and try search
+                                m_messages.push_back(mpair);
+                                m_searchStrings.push_back(util::base64_encode(_id));
+                                m_signalSearch = true;
+                            }
                         }
                     }
                 }

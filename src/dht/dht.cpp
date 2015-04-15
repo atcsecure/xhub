@@ -31,8 +31,10 @@ THE SOFTWARE.
 /* For memmem. */
 #define _GNU_SOURCE
 
-#include "../util.h"
-#include "../logger.h"
+#define _WIN32_WINNT 0x0600
+
+#include "../util/util.h"
+#include "../util/logger.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -43,6 +45,11 @@ THE SOFTWARE.
 #include <fcntl.h>
 // #include <sys/time.h>
 
+#ifdef __MINGW32__
+#include <windef.h>
+#include<winsock2.h>
+#include <ws2tcpip.h>
+#else
 #ifndef WIN32
 #include <arpa/inet.h>
 #include <sys/types.h>
@@ -52,6 +59,7 @@ THE SOFTWARE.
 // #include <w32api.h>
 // #define WINVER WindowsXP
 #include <ws2tcpip.h>
+#endif
 #endif
 
 #include <sstream>
@@ -82,11 +90,11 @@ THE SOFTWARE.
 #include "../xbridgeapp.h"
 #include <QDebug>
 
-struct timezone
-{
-  int  tz_minuteswest; /* minutes W of Greenwich */
-  int  tz_dsttime;     /* type of dst correction */
-};
+//struct timezone
+//{
+//  int  tz_minuteswest; /* minutes W of Greenwich */
+//  int  tz_dsttime;     /* type of dst correction */
+//};
 
 int gettimeofday(struct timeval *tv, struct timezone *tz)
 {
@@ -312,6 +320,7 @@ static int send_error(const struct sockaddr *sa, int salen,
 #define GET_PEERS     4
 #define ANNOUNCE_PEER 5
 #define MESSAGE       6
+#define BROADCAST     7
 
 #define WANT4 1
 #define WANT6 2
@@ -385,6 +394,8 @@ bool dht_debug = false;
 
 char buf[1024];
 
+//*****************************************************************************
+//*****************************************************************************
 static void debugf(const char *format, ...)
 {
     if (!dht_debug)
@@ -493,7 +504,7 @@ static int
 common_bits(const unsigned char *id1, const unsigned char *id2)
 {
     int i, j;
-    unsigned char xor;
+    unsigned char _xor;
     for(i = 0; i < 20; i++) {
         if(id1[i] != id2[i])
             break;
@@ -502,11 +513,11 @@ common_bits(const unsigned char *id1, const unsigned char *id2)
     if(i == 20)
         return 160;
 
-    xor = id1[i] ^ id2[i];
+    _xor = id1[i] ^ id2[i];
 
     j = 0;
-    while((xor & 0x80) == 0) {
-        xor <<= 1;
+    while((_xor & 0x80) == 0) {
+        _xor <<= 1;
         j++;
     }
 
@@ -1515,8 +1526,8 @@ storage_store(const unsigned char *id,
 int dht_storage_store(const unsigned char * id, const sockaddr *sa, unsigned short port)
 {
     // TODO sizeof (id)
-    qDebug() << "new entity";
-    qDebug() << util::base64_encode(std::string((char *)id, 20)).c_str();
+    // qDebug() << "new entity";
+    // qDebug() << util::base64_encode(std::string((char *)id, 20)).c_str();
 
     return storage_store(id, sa, port);
 }
@@ -1854,7 +1865,7 @@ dht_init(int s, int s6, const unsigned char *id, const unsigned char *v)
         have_v = 0;
     }
 
-    gettimeofday(&now, NULL);
+    gettimeofday(&now, (struct timezone *)0);
 
     mybucket_grow_time = now.tv_sec;
     mybucket6_grow_time = now.tv_sec;
@@ -2086,7 +2097,7 @@ dht_periodic(const unsigned char * buf, size_t buflen,
              time_t *tosleep,
              dht_callback *callback, void *closure)
 {
-    gettimeofday(&now, NULL);
+    gettimeofday(&now, (struct timezone *)0);
 
     if(buflen > 0) {
         int message;
@@ -2139,220 +2150,266 @@ dht_periodic(const unsigned char * buf, size_t buflen,
             }
         }
 
-        switch(message) {
-        case REPLY:
-            if(tid_len != 4) {
-                debugf("Broken node truncates transaction ids: ");
-                debug_printable(buf, buflen);
-                /* This is really annoying, as it means that we will
-                   time-out all our searches that go through this node.
-                   Kill it. */
-                blacklist_node(id, from, fromlen);
-                goto dontread;
-            }
-            if(tid_match(tid, "pn", NULL)) {
-                debugf("Pong!\n");
-                new_node(id, from, fromlen, 2);
-            } else if(tid_match(tid, "fn", NULL) ||
-                      tid_match(tid, "gp", NULL)) {
-                int gp = 0;
-                struct search *sr = NULL;
-                if(tid_match(tid, "gp", &ttid)) {
-                    gp = 1;
-                    sr = find_search(ttid, from->sa_family);
-                }
-                debugf("Nodes found (%d+%d)%s!\n", nodes_len/26, nodes6_len/38,
-                       gp ? " for get_peers" : "");
-                if(nodes_len % 26 != 0 || nodes6_len % 38 != 0) {
-                    debugf("Unexpected length for node info!\n");
-                    blacklist_node(id, from, fromlen);
-                } else if(gp && sr == NULL) {
-                    debugf("Unknown search!\n");
-                    new_node(id, from, fromlen, 1);
-                } else {
-                    int i;
-                    new_node(id, from, fromlen, 2);
-                    for(i = 0; i < nodes_len / 26; i++) {
-                        unsigned char *ni = nodes + i * 26;
-                        struct sockaddr_in sin;
-                        if(id_cmp(ni, myid) == 0)
-                            continue;
-                        memset(&sin, 0, sizeof(sin));
-                        sin.sin_family = AF_INET;
-                        memcpy(&sin.sin_addr, ni + 20, 4);
-                        memcpy(&sin.sin_port, ni + 24, 2);
-                        new_node(ni, (struct sockaddr*)&sin, sizeof(sin), 0);
-                        if(sr && sr->af == AF_INET) {
-                            insert_search_node(ni,
-                                               (struct sockaddr*)&sin,
-                                               sizeof(sin),
-                                               sr, 0, NULL, 0);
-                        }
-                    }
-                    for(i = 0; i < nodes6_len / 38; i++) {
-                        unsigned char *ni = nodes6 + i * 38;
-                        struct sockaddr_in6 sin6;
-                        if(id_cmp(ni, myid) == 0)
-                            continue;
-                        memset(&sin6, 0, sizeof(sin6));
-                        sin6.sin6_family = AF_INET6;
-                        memcpy(&sin6.sin6_addr, ni + 20, 16);
-                        memcpy(&sin6.sin6_port, ni + 36, 2);
-                        new_node(ni, (struct sockaddr*)&sin6, sizeof(sin6), 0);
-                        if(sr && sr->af == AF_INET6) {
-                            insert_search_node(ni,
-                                               (struct sockaddr*)&sin6,
-                                               sizeof(sin6),
-                                               sr, 0, NULL, 0);
-                        }
-                    }
-                    if(sr)
-                        /* Since we received a reply, the number of
-                           requests in flight has decreased.  Let's push
-                           another request. */
-                        search_send_get_peers(sr, NULL);
-                }
-                if(sr) {
-                    insert_search_node(id, from, fromlen, sr,
-                                       1, token, token_len);
-                    if(values_len > 0 || values6_len > 0) {
-                        debugf("Got values (%d+%d)!\n",
-                               values_len / 6, values6_len / 18);
-                        if(callback) {
-                            if(values_len > 0)
-                                (*callback)(closure, DHT_EVENT_VALUES, sr->id,
-                                            (void*)values, values_len);
-
-                            if(values6_len > 0)
-                                (*callback)(closure, DHT_EVENT_VALUES6, sr->id,
-                                            (void*)values6, values6_len);
-                        }
-                    }
-                }
-            } else if(tid_match(tid, "ap", &ttid)) {
-                struct search *sr;
-                debugf("Got reply to announce_peer.\n");
-                sr = find_search(ttid, from->sa_family);
-                if(!sr) {
-                    debugf("Unknown search!\n");
-                    new_node(id, from, fromlen, 1);
-                } else {
-                    int i;
-                    new_node(id, from, fromlen, 2);
-                    for(i = 0; i < sr->numnodes; i++)
-                        if(id_cmp(sr->nodes[i].id, id) == 0) {
-                            sr->nodes[i].request_time = 0;
-                            sr->nodes[i].reply_time = now.tv_sec;
-                            sr->nodes[i].acked = 1;
-                            sr->nodes[i].pinged = 0;
-                            break;
-                        }
-                    /* See comment for gp above. */
-                    search_send_get_peers(sr, NULL);
-                }
-            } else {
-                debugf("Unexpected reply: ");
-                debug_printable(buf, buflen);
-            }
-            break;
-        case PING:
-            debugf("Ping (%d)!\n", tid_len);
-            new_node(id, from, fromlen, 1);
-            debugf("Sending pong.\n");
-            send_pong(from, fromlen, tid, tid_len);
-            break;
-        case FIND_NODE:
-            debugf("Find node!\n");
-            new_node(id, from, fromlen, 1);
-            debugf("Sending closest nodes (%d).\n", want);
-            send_closest_nodes(from, fromlen,
-                               tid, tid_len, target, want,
-                               0, NULL, NULL, 0);
-            break;
-        case GET_PEERS:
-            debugf("Get_peers!\n");
-            new_node(id, from, fromlen, 1);
-            if(id_cmp(info_hash, zeroes) == 0) {
-                debugf("Eek!  Got get_peers with no info_hash.\n");
-                send_error(from, fromlen, tid, tid_len,
-                           203, "Get_peers with no info_hash");
-                break;
-            } else {
-                struct storage *st = find_storage(info_hash);
-                unsigned char token[TOKEN_SIZE];
-                make_token(from, 0, token);
-                if(st && st->numpeers > 0) {
-                     debugf("Sending found%s peers.\n",
-                            from->sa_family == AF_INET6 ? " IPv6" : "");
-                     send_closest_nodes(from, fromlen,
-                                        tid, tid_len,
-                                        info_hash, want,
-                                        from->sa_family, st,
-                                        token, TOKEN_SIZE);
-                } else {
-                    debugf("Sending nodes for get_peers.\n");
-                    send_closest_nodes(from, fromlen,
-                                       tid, tid_len, info_hash, want,
-                                       0, NULL, token, TOKEN_SIZE);
-                }
-            }
-            break;
-        case ANNOUNCE_PEER:
-            debugf("Announce peer!\n");
-            new_node(id, from, fromlen, 1);
-            if(id_cmp(info_hash, zeroes) == 0) {
-                debugf("Announce_peer with no info_hash.\n");
-                send_error(from, fromlen, tid, tid_len,
-                           203, "Announce_peer with no info_hash");
-                break;
-            }
-            if(!token_match(token, token_len, from)) {
-                debugf("Incorrect token for announce_peer.\n");
-                send_error(from, fromlen, tid, tid_len,
-                           203, "Announce_peer with wrong token");
-                break;
-            }
-            if(port == 0) {
-                debugf("Announce_peer with forbidden port %d.\n", port);
-                send_error(from, fromlen, tid, tid_len,
-                           203, "Announce_peer with forbidden port number");
-                break;
-            }
-            storage_store(info_hash, from, port);
-            /* Note that if storage_store failed, we lie to the requestor.
-               This is to prevent them from backtracking, and hence
-               polluting the DHT. */
-            debugf("Sending peer announced.\n");
-            send_peer_announced(from, fromlen, tid, tid_len);
-            break;
-        case MESSAGE:
-            debugf("Message received!\n");
-            new_node(id, from, fromlen, 1);
-
-            char * ptr = strstr((char *)buf, ":message")+8;
-            size_t len = atoi(ptr);
-            while (isdigit(*ptr))
+        switch(message)
+        {
+            case REPLY:
             {
+                if(tid_len != 4)
+                {
+                    debugf("Broken node truncates transaction ids: ");
+                    debug_printable(buf, buflen);
+                    /* This is really annoying, as it means that we will
+                       time-out all our searches that go through this node.
+                       Kill it. */
+                    blacklist_node(id, from, fromlen);
+                    goto dontread;
+                }
+                if(tid_match(tid, "pn", NULL)) {
+                    debugf("Pong!\n");
+                    new_node(id, from, fromlen, 2);
+                } else if(tid_match(tid, "fn", NULL) ||
+                          tid_match(tid, "gp", NULL)) {
+                    int gp = 0;
+                    struct search *sr = NULL;
+                    if(tid_match(tid, "gp", &ttid)) {
+                        gp = 1;
+                        sr = find_search(ttid, from->sa_family);
+                    }
+                    debugf("Nodes found (%d+%d)%s!\n", nodes_len/26, nodes6_len/38,
+                           gp ? " for get_peers" : "");
+                    if(nodes_len % 26 != 0 || nodes6_len % 38 != 0) {
+                        debugf("Unexpected length for node info!\n");
+                        blacklist_node(id, from, fromlen);
+                    } else if(gp && sr == NULL) {
+                        debugf("Unknown search!\n");
+                        new_node(id, from, fromlen, 1);
+                    } else {
+                        int i;
+                        new_node(id, from, fromlen, 2);
+                        for(i = 0; i < nodes_len / 26; i++) {
+                            unsigned char *ni = nodes + i * 26;
+                            struct sockaddr_in sin;
+                            if(id_cmp(ni, myid) == 0)
+                                continue;
+                            memset(&sin, 0, sizeof(sin));
+                            sin.sin_family = AF_INET;
+                            memcpy(&sin.sin_addr, ni + 20, 4);
+                            memcpy(&sin.sin_port, ni + 24, 2);
+                            new_node(ni, (struct sockaddr*)&sin, sizeof(sin), 0);
+                            if(sr && sr->af == AF_INET) {
+                                insert_search_node(ni,
+                                                   (struct sockaddr*)&sin,
+                                                   sizeof(sin),
+                                                   sr, 0, NULL, 0);
+                            }
+                        }
+                        for(i = 0; i < nodes6_len / 38; i++) {
+                            unsigned char *ni = nodes6 + i * 38;
+                            struct sockaddr_in6 sin6;
+                            if(id_cmp(ni, myid) == 0)
+                                continue;
+                            memset(&sin6, 0, sizeof(sin6));
+                            sin6.sin6_family = AF_INET6;
+                            memcpy(&sin6.sin6_addr, ni + 20, 16);
+                            memcpy(&sin6.sin6_port, ni + 36, 2);
+                            new_node(ni, (struct sockaddr*)&sin6, sizeof(sin6), 0);
+                            if(sr && sr->af == AF_INET6) {
+                                insert_search_node(ni,
+                                                   (struct sockaddr*)&sin6,
+                                                   sizeof(sin6),
+                                                   sr, 0, NULL, 0);
+                            }
+                        }
+                        if(sr)
+                            /* Since we received a reply, the number of
+                               requests in flight has decreased.  Let's push
+                               another request. */
+                            search_send_get_peers(sr, NULL);
+                    }
+                    if(sr) {
+                        insert_search_node(id, from, fromlen, sr,
+                                           1, token, token_len);
+                        if(values_len > 0 || values6_len > 0) {
+                            debugf("Got values (%d+%d)!\n",
+                                   values_len / 6, values6_len / 18);
+                            if(callback) {
+                                if(values_len > 0)
+                                    (*callback)(closure, DHT_EVENT_VALUES, sr->id,
+                                                (void*)values, values_len);
+
+                                if(values6_len > 0)
+                                    (*callback)(closure, DHT_EVENT_VALUES6, sr->id,
+                                                (void*)values6, values6_len);
+                            }
+                        }
+                    }
+                } else if(tid_match(tid, "ap", &ttid)) {
+                    struct search *sr;
+                    debugf("Got reply to announce_peer.\n");
+                    sr = find_search(ttid, from->sa_family);
+                    if(!sr) {
+                        debugf("Unknown search!\n");
+                        new_node(id, from, fromlen, 1);
+                    } else {
+                        int i;
+                        new_node(id, from, fromlen, 2);
+                        for(i = 0; i < sr->numnodes; i++)
+                            if(id_cmp(sr->nodes[i].id, id) == 0) {
+                                sr->nodes[i].request_time = 0;
+                                sr->nodes[i].reply_time = now.tv_sec;
+                                sr->nodes[i].acked = 1;
+                                sr->nodes[i].pinged = 0;
+                                break;
+                            }
+                        /* See comment for gp above. */
+                        search_send_get_peers(sr, NULL);
+                    }
+                } else {
+                    debugf("Unexpected reply: ");
+                    debug_printable(buf, buflen);
+                }
+                break;
+            } // REPLY
+
+            case PING:
+            {
+                debugf("Ping (%d)!\n", tid_len);
+                new_node(id, from, fromlen, 1);
+                debugf("Sending pong.\n");
+                send_pong(from, fromlen, tid, tid_len);
+                break;
+            } // PING
+
+            case FIND_NODE:
+            {
+                debugf("Find node!\n");
+                new_node(id, from, fromlen, 1);
+                debugf("Sending closest nodes (%d).\n", want);
+                send_closest_nodes(from, fromlen,
+                                   tid, tid_len, target, want,
+                                   0, NULL, NULL, 0);
+                break;
+            } // FIND_NODE
+
+            case GET_PEERS:
+            {
+                debugf("Get_peers!\n");
+                new_node(id, from, fromlen, 1);
+                if(id_cmp(info_hash, zeroes) == 0) {
+                    debugf("Eek!  Got get_peers with no info_hash.\n");
+                    send_error(from, fromlen, tid, tid_len,
+                               203, "Get_peers with no info_hash");
+                    break;
+                } else {
+                    struct storage *st = find_storage(info_hash);
+                    unsigned char token[TOKEN_SIZE];
+                    make_token(from, 0, token);
+                    if(st && st->numpeers > 0) {
+                         debugf("Sending found%s peers.\n",
+                                from->sa_family == AF_INET6 ? " IPv6" : "");
+                         send_closest_nodes(from, fromlen,
+                                            tid, tid_len,
+                                            info_hash, want,
+                                            from->sa_family, st,
+                                            token, TOKEN_SIZE);
+                    } else {
+                        debugf("Sending nodes for get_peers.\n");
+                        send_closest_nodes(from, fromlen,
+                                           tid, tid_len, info_hash, want,
+                                           0, NULL, token, TOKEN_SIZE);
+                    }
+                }
+                break;
+            } // GET_PEERS
+
+            case ANNOUNCE_PEER:
+            {
+                debugf("Announce peer!\n");
+                new_node(id, from, fromlen, 1);
+                if(id_cmp(info_hash, zeroes) == 0) {
+                    debugf("Announce_peer with no info_hash.\n");
+                    send_error(from, fromlen, tid, tid_len,
+                               203, "Announce_peer with no info_hash");
+                    break;
+                }
+                if(!token_match(token, token_len, from)) {
+                    debugf("Incorrect token for announce_peer.\n");
+                    send_error(from, fromlen, tid, tid_len,
+                               203, "Announce_peer with wrong token");
+                    break;
+                }
+                if(port == 0) {
+                    debugf("Announce_peer with forbidden port %d.\n", port);
+                    send_error(from, fromlen, tid, tid_len,
+                               203, "Announce_peer with forbidden port number");
+                    break;
+                }
+                storage_store(info_hash, from, port);
+                /* Note that if storage_store failed, we lie to the requestor.
+                   This is to prevent them from backtracking, and hence
+                   polluting the DHT. */
+                debugf("Sending peer announced.\n");
+                send_peer_announced(from, fromlen, tid, tid_len);
+                break;
+            } // ANNOUNCE_PEERS
+
+            case MESSAGE:
+            {
+                debugf("Message received!\n");
+                new_node(id, from, fromlen, 1);
+
+                char * ptr = strstr((char *)buf, ":message")+8;
+                size_t len = atoi(ptr);
+                while (isdigit(*ptr))
+                {
+                    ++ptr;
+                }
+
+                // :
                 ++ptr;
-            }
 
-            // :
-            ++ptr;
+                std::string message(ptr, ptr+len);
+                message = util::base64_decode(message);
 
-            std::string message(ptr, ptr+len);
-            message = util::base64_decode(message);
+                std::vector<unsigned char> addr;
+                std::copy(message.begin(), message.begin()+20, std::back_inserter(addr));
 
-            std::vector<unsigned char> addr;
-            std::copy(message.begin(), message.begin()+20, std::back_inserter(addr));
+                std::vector<unsigned char> vmessage;
+                std::copy(message.begin(), message.end(), std::back_inserter(vmessage));
 
-            std::vector<unsigned char> vmessage;
-            std::copy(message.begin(), message.end(), std::back_inserter(vmessage));
+                XBridgeApp * app = qobject_cast<XBridgeApp *>(qApp);
+                app->onMessageReceived(addr, vmessage);
 
-            XBridgeApp * app = qobject_cast<XBridgeApp *>(qApp);
-            app->onXChatMessageReceived(addr, vmessage);
+                break;
+            } // MESSAGE
 
-            break;
-        }
+            case BROADCAST:
+            {
+                debugf("Broadcast Message received!\n");
+                new_node(id, from, fromlen, 1);
+
+                char * ptr = strstr((char *)buf, ":broadcast")+10;
+                size_t len = atoi(ptr);
+                while (isdigit(*ptr))
+                {
+                    ++ptr;
+                }
+
+                // :
+                ++ptr;
+
+                std::string message(ptr, ptr+len);
+                message = util::base64_decode(message);
+
+                std::vector<unsigned char> vmessage;
+                std::copy(message.begin(), message.end(), std::back_inserter(vmessage));
+
+                XBridgeApp * app = qobject_cast<XBridgeApp *>(qApp);
+                app->onBroadcastReceived(vmessage);
+
+                break;
+            } // BROADCAST
+        } // switch
     }
 
  dontread:
@@ -2540,22 +2597,131 @@ dht_ping_node(struct sockaddr *sa, int salen)
 // We could use a proper bencoding printer and parser, but the format of
 // DHT messages is fairly stylised, so this seemed simpler
 //*****************************************************************************
-#define CHECK(offset, delta, size)                      \
-    if(delta < 0 || offset + delta > size) goto fail
-
-#define INC(offset, delta, size)                        \
-    CHECK(offset, delta, size);                         \
-    offset += delta
-
-#define COPY(buf, offset, src, delta, size)             \
-    CHECK(offset, delta, size);                         \
-    memcpy(buf + offset, src, delta);                   \
+bool INC(int & offset, const int delta, const int size)
+{
+    if(delta < 0 || offset + delta > size) return false;
     offset += delta;
+    return true;
+}
+
+bool COPY(char * buf, int & offset, const unsigned char * src, const int delta, const int size)
+{
+    if(delta < 0 || offset + delta > size) return false;
+    memcpy(buf + offset, src, delta);
+    offset += delta;
+    return true;
+}
 
 #define ADD_V(buf, offset, size)                        \
     if(have_v) {                                        \
         COPY(buf, offset, my_v, sizeof(my_v), size);    \
     }
+
+//*****************************************************************************
+//*****************************************************************************
+int dht_send_broadcast(const unsigned char * message, const int length)
+{
+//    if (!buckets || !buckets->nodes ||
+//        !buckets6 || !buckets6->nodes)
+//    {
+//        // no nodes
+//        return 0;
+//    }
+    if (!storage)
+    {
+        return 0;
+    }
+
+    std::string msg((const char *)message, length);
+    msg = util::base64_encode(msg);
+
+    char buf[512];
+    int i = 0;
+    {
+        int rc = _snprintf(buf + i, 512 - i, "d1:ad2:id20:");
+        if (!INC(i, rc, 512)) return -1;
+        if (!COPY(buf, i, myid, 20, 512)) return -1;
+        rc = _snprintf(buf + i, 512 - i, "e1:q9:broadcast%d:", msg.length());
+        if (!INC(i, rc, 512)) return -1;
+        rc = _snprintf(buf + i, 512 - i, "%s", msg.c_str());
+        if (!INC(i, rc, 512)) return -1;
+        rc = _snprintf(buf + i, 512 - i, "1:y1:qe");
+        if (!INC(i, rc, 512)) return -1;
+    }
+
+    struct storage * st = storage;
+    while (st)
+    {
+        st->id;
+        st = st->next;
+    }
+
+//    int count = 0;
+//    bucket * b = buckets;
+//    while (b)
+//    {
+//        node * n = b->nodes;
+//        while (n)
+//        {
+//            dht_send(buf, i, 0, (sockaddr *)&n->ss, sizeof(n->ss));
+//            ++count;
+//            n = n->next;
+//        }
+//        b = b->next;
+//    }
+
+//    b = buckets6;
+//    while (b)
+//    {
+//        node * n = b->nodes;
+//        while (n)
+//        {
+//            dht_send(buf, i, 0, (sockaddr *)&n->ss, sizeof(n->ss));
+//            ++count;
+//            n = n->next;
+//        }
+//        b = b->next;
+//    }
+
+//    return (count = 0);
+
+//    search * sr = searches;
+//    while (sr)
+//    {
+//        if (sr->af == AF_INET)
+//        {
+//            if (sr && sr->numnodes)
+//            {
+//                // send to
+//                dht_send(buf, i, 0, (sockaddr *)&sr->nodes[0].ss, sizeof(sr->nodes[0].ss));
+//                break;
+//            }
+//        }
+//        sr = sr->next;
+//    }
+
+//    search * sr6 = searches;
+//    while (sr6)
+//    {
+//        if (sr6->af == AF_INET6)
+//        {
+//            if (sr6 && sr6->numnodes)
+//            {
+//                // send to
+//                dht_send(buf, i, 0, (sockaddr *)&sr6->nodes[0].ss, sizeof(sr6->nodes[0].ss));
+//                break;
+//            }
+//        }
+//        sr6 = sr6->next;
+//    }
+
+//    if (!sr && !sr6)
+//    {
+//        return -1;
+//    }
+
+//    return 0;
+}
 
 //*****************************************************************************
 //*****************************************************************************
@@ -2568,11 +2734,15 @@ int dht_send_message(const unsigned char * id, const unsigned char * message, co
     char buf[512];
     int i = 0;
     {
-        int rc = _snprintf(buf + i, 512 - i, "d1:ad2:id20:"); INC(i, rc, 512);
-        COPY(buf, i, myid, 20, 512);
-        rc = _snprintf(buf + i, 512 - i, "e1:q7:message%d:", msg.length()); INC(i, rc, 512);
-        rc = _snprintf(buf + i, 512 - i, "%s", msg.c_str()); INC(i, rc, 512);
-        rc = _snprintf(buf + i, 512 - i, "1:y1:qe"); INC(i, rc, 512);
+        int rc = _snprintf(buf + i, 512 - i, "d1:ad2:id20:");
+        if (!INC(i, rc, 512)) return -1;
+        if (!COPY(buf, i, myid, 20, 512)) return -1;
+        rc = _snprintf(buf + i, 512 - i, "e1:q7:message%d:", msg.length());
+        if (!INC(i, rc, 512)) return -1;
+        rc = _snprintf(buf + i, 512 - i, "%s", msg.c_str());
+        if (!INC(i, rc, 512)) return -1;
+        rc = _snprintf(buf + i, 512 - i, "1:y1:qe");
+        if (!INC(i, rc, 512)) return -1;
     }
 
     struct storage * st = find_storage(id);
@@ -2586,7 +2756,7 @@ int dht_send_message(const unsigned char * id, const unsigned char * message, co
     search * sr = searches;
     while (sr)
     {
-        if(sr->af == AF_INET && id_cmp(sr->id, id) == 0)
+        if (sr->af == AF_INET && id_cmp(sr->id, id) == 0)
         {
             if (sr && sr->numnodes)
             {
@@ -2602,7 +2772,7 @@ int dht_send_message(const unsigned char * id, const unsigned char * message, co
     search * sr6 = searches;
     while (sr6)
     {
-        if(sr6->af == AF_INET6 && id_cmp(sr6->id, id) == 0)
+        if (sr6->af == AF_INET6 && id_cmp(sr6->id, id) == 0)
         {
             if (sr6 && sr6->numnodes)
             {
@@ -2620,14 +2790,11 @@ int dht_send_message(const unsigned char * id, const unsigned char * message, co
     }
 
     return 0;
-
-fail:
-    return -1;
 }
 
 //*****************************************************************************
 //*****************************************************************************
-static int
+int
 dht_send(const char * buf, size_t len, int flags,
          const struct sockaddr *sa, int salen)
 {
@@ -2665,13 +2832,15 @@ send_ping(const struct sockaddr *sa, int salen,
 {
     char buf[512];
     int i = 0, rc;
-    rc = _snprintf(buf + i, 512 - i, "d1:ad2:id20:"); INC(i, rc, 512);
-    COPY(buf, i, myid, 20, 512);
+    rc = _snprintf(buf + i, 512 - i, "d1:ad2:id20:");
+    if (!INC(i, rc, 512)) goto fail;
+    if (!COPY(buf, i, myid, 20, 512)) goto fail;
     rc = _snprintf(buf + i, 512 - i, "e1:q4:ping1:t%d:", tid_len);
-    INC(i, rc, 512);
-    COPY(buf, i, tid, tid_len, 512);
+    if (!INC(i, rc, 512)) goto fail;
+    if (!COPY(buf, i, tid, tid_len, 512)) goto fail;
     ADD_V(buf, i, 512);
-    rc = _snprintf(buf + i, 512 - i, "1:y1:qe"); INC(i, rc, 512);
+    rc = _snprintf(buf + i, 512 - i, "1:y1:qe");
+    if (!INC(i, rc, 512)) goto fail;
     return dht_send(buf, i, 0, sa, salen);
 
  fail:
@@ -2687,12 +2856,15 @@ send_pong(const struct sockaddr *sa, int salen,
 {
     char buf[512];
     int i = 0, rc;
-    rc = _snprintf(buf + i, 512 - i, "d1:rd2:id20:"); INC(i, rc, 512);
-    COPY(buf, i, myid, 20, 512);
-    rc = _snprintf(buf + i, 512 - i, "e1:t%d:", tid_len); INC(i, rc, 512);
-    COPY(buf, i, tid, tid_len, 512);
+    rc = _snprintf(buf + i, 512 - i, "d1:rd2:id20:");
+    if (!INC(i, rc, 512)) goto fail;
+    if (!COPY(buf, i, myid, 20, 512)) goto fail;
+    rc = _snprintf(buf + i, 512 - i, "e1:t%d:", tid_len);
+    if (!INC(i, rc, 512)) goto fail;
+    if (!COPY(buf, i, tid, tid_len, 512)) goto fail;
     ADD_V(buf, i, 512);
-    rc = _snprintf(buf + i, 512 - i, "1:y1:re"); INC(i, rc, 512);
+    rc = _snprintf(buf + i, 512 - i, "1:y1:re");
+    if (!INC(i, rc, 512)) goto fail;
     return dht_send(buf, i, 0, sa, salen);
 
  fail:
@@ -2709,21 +2881,24 @@ send_find_node(const struct sockaddr *sa, int salen,
 {
     char buf[512];
     int i = 0, rc;
-    rc = _snprintf(buf + i, 512 - i, "d1:ad2:id20:"); INC(i, rc, 512);
-    COPY(buf, i, myid, 20, 512);
-    rc = _snprintf(buf + i, 512 - i, "6:target20:"); INC(i, rc, 512);
-    COPY(buf, i, target, 20, 512);
+    rc = _snprintf(buf + i, 512 - i, "d1:ad2:id20:");
+    if (!INC(i, rc, 512)) goto fail;
+    if (!COPY(buf, i, myid, 20, 512)) goto fail;
+    rc = _snprintf(buf + i, 512 - i, "6:target20:");
+    if (!INC(i, rc, 512)) goto fail;
+    if (!COPY(buf, i, target, 20, 512)) goto fail;
     if(want > 0) {
         rc = _snprintf(buf + i, 512 - i, "4:wantl%s%se",
                       (want & WANT4) ? "2:n4" : "",
                       (want & WANT6) ? "2:n6" : "");
-        INC(i, rc, 512);
+        if (!INC(i, rc, 512)) goto fail;
     }
     rc = _snprintf(buf + i, 512 - i, "e1:q9:find_node1:t%d:", tid_len);
-    INC(i, rc, 512);
-    COPY(buf, i, tid, tid_len, 512);
+    if (!INC(i, rc, 512)) goto fail;
+    if (!COPY(buf, i, tid, tid_len, 512)) goto fail;
     ADD_V(buf, i, 512);
-    rc = _snprintf(buf + i, 512 - i, "1:y1:qe"); INC(i, rc, 512);
+    rc = _snprintf(buf + i, 512 - i, "1:y1:qe");
+    if (!INC(i, rc, 512)) goto fail;
     return dht_send(buf, i, confirm ? MSG_CONFIRM : 0, sa, salen);
 
  fail:
@@ -2744,22 +2919,23 @@ send_nodes_peers(const struct sockaddr *sa, int salen,
     char buf[2048];
     int i = 0, rc, j0, j, k, len;
 
-    rc = _snprintf(buf + i, 2048 - i, "d1:rd2:id20:"); INC(i, rc, 2048);
-    COPY(buf, i, myid, 20, 2048);
+    rc = _snprintf(buf + i, 2048 - i, "d1:rd2:id20:");
+    if (!INC(i, rc, 2048)) goto fail;
+    if (!COPY(buf, i, myid, 20, 2048)) goto fail;
     if(nodes_len > 0) {
         rc = _snprintf(buf + i, 2048 - i, "5:nodes%d:", nodes_len);
-        INC(i, rc, 2048);
-        COPY(buf, i, nodes, nodes_len, 2048);
+        if (!INC(i, rc, 2048)) goto fail;
+        if (!COPY(buf, i, nodes, nodes_len, 2048)) goto fail;
     }
     if(nodes6_len > 0) {
          rc = _snprintf(buf + i, 2048 - i, "6:nodes6%d:", nodes6_len);
-         INC(i, rc, 2048);
-         COPY(buf, i, nodes6, nodes6_len, 2048);
+         if (!INC(i, rc, 2048)) goto fail;
+         if (!COPY(buf, i, nodes6, nodes6_len, 2048)) goto fail;
     }
     if(token_len > 0) {
         rc = _snprintf(buf + i, 2048 - i, "5:token%d:", token_len);
-        INC(i, rc, 2048);
-        COPY(buf, i, token, token_len, 2048);
+        if (!INC(i, rc, 2048)) goto fail;
+        if (!COPY(buf, i, token, token_len, 2048)) goto fail;
     }
 
     if(st && st->numpeers > 0) {
@@ -2772,26 +2948,30 @@ send_nodes_peers(const struct sockaddr *sa, int salen,
         j = j0;
         k = 0;
 
-        rc = _snprintf(buf + i, 2048 - i, "6:valuesl"); INC(i, rc, 2048);
+        rc = _snprintf(buf + i, 2048 - i, "6:valuesl");
+        if (!INC(i, rc, 2048)) goto fail;
         do {
             if(st->peers[j].len == len) {
                 unsigned short swapped;
                 swapped = htons(st->peers[j].port);
                 rc = _snprintf(buf + i, 2048 - i, "%d:", len + 2);
-                INC(i, rc, 2048);
-                COPY(buf, i, st->peers[j].ip, len, 2048);
-                COPY(buf, i, &swapped, 2, 2048);
+                if (!INC(i, rc, 2048)) goto fail;
+                if (!COPY(buf, i, st->peers[j].ip, len, 2048)) goto fail;
+                if (!COPY(buf, i, (unsigned char *)&swapped, 2, 2048)) goto fail;
                 k++;
             }
             j = (j + 1) % st->numpeers;
         } while(j != j0 && k < 50);
-        rc = _snprintf(buf + i, 2048 - i, "e"); INC(i, rc, 2048);
+        rc = _snprintf(buf + i, 2048 - i, "e");
+        if (!INC(i, rc, 2048)) goto fail;
     }
 
-    rc = _snprintf(buf + i, 2048 - i, "e1:t%d:", tid_len); INC(i, rc, 2048);
-    COPY(buf, i, tid, tid_len, 2048);
+    rc = _snprintf(buf + i, 2048 - i, "e1:t%d:", tid_len);
+    if (!INC(i, rc, 2048)) goto fail;
+    if (!COPY(buf, i, tid, tid_len, 2048)) goto fail;
     ADD_V(buf, i, 2048);
-    rc = _snprintf(buf + i, 2048 - i, "1:y1:re"); INC(i, rc, 2048);
+    rc = _snprintf(buf + i, 2048 - i, "1:y1:re");
+    if (!INC(i, rc, 2048)) goto fail;
 
     return dht_send(buf, i, 0, sa, salen);
 
@@ -2923,21 +3103,24 @@ send_get_peers(const struct sockaddr *sa, int salen,
     char buf[512];
     int i = 0, rc;
 
-    rc = _snprintf(buf + i, 512 - i, "d1:ad2:id20:"); INC(i, rc, 512);
-    COPY(buf, i, myid, 20, 512);
-    rc = _snprintf(buf + i, 512 - i, "9:info_hash20:"); INC(i, rc, 512);
-    COPY(buf, i, infohash, 20, 512);
+    rc = _snprintf(buf + i, 512 - i, "d1:ad2:id20:");
+    if (!INC(i, rc, 512)) goto fail;
+    if (!COPY(buf, i, myid, 20, 512)) goto fail;
+    rc = _snprintf(buf + i, 512 - i, "9:info_hash20:");
+    if (!INC(i, rc, 512)) goto fail;
+    if (!COPY(buf, i, infohash, 20, 512)) goto fail;
     if(want > 0) {
         rc = _snprintf(buf + i, 512 - i, "4:wantl%s%se",
                       (want & WANT4) ? "2:n4" : "",
                       (want & WANT6) ? "2:n6" : "");
-        INC(i, rc, 512);
+        if (!INC(i, rc, 512)) goto fail;
     }
     rc = _snprintf(buf + i, 512 - i, "e1:q9:get_peers1:t%d:", tid_len);
-    INC(i, rc, 512);
-    COPY(buf, i, tid, tid_len, 512);
+    if (!INC(i, rc, 512)) goto fail;
+    if (!COPY(buf, i, tid, tid_len, 512)) goto fail;
     ADD_V(buf, i, 512);
-    rc = _snprintf(buf + i, 512 - i, "1:y1:qe"); INC(i, rc, 512);
+    rc = _snprintf(buf + i, 512 - i, "1:y1:qe");
+    if (!INC(i, rc, 512)) goto fail;
     return dht_send(buf, i, confirm ? MSG_CONFIRM : 0, sa, salen);
 
  fail:
@@ -2956,19 +3139,22 @@ send_announce_peer(const struct sockaddr *sa, int salen,
     char buf[512];
     int i = 0, rc;
 
-    rc = _snprintf(buf + i, 512 - i, "d1:ad2:id20:"); INC(i, rc, 512);
-    COPY(buf, i, myid, 20, 512);
-    rc = _snprintf(buf + i, 512 - i, "9:info_hash20:"); INC(i, rc, 512);
-    COPY(buf, i, infohash, 20, 512);
+    rc = _snprintf(buf + i, 512 - i, "d1:ad2:id20:");
+    if (!INC(i, rc, 512)) goto fail;
+    if (!COPY(buf, i, myid, 20, 512)) goto fail;
+    rc = _snprintf(buf + i, 512 - i, "9:info_hash20:");
+    if (!INC(i, rc, 512)) goto fail;
+    if (!COPY(buf, i, infohash, 20, 512))
     rc = _snprintf(buf + i, 512 - i, "4:porti%ue5:token%d:", (unsigned)port,
                   token_len);
-    INC(i, rc, 512);
-    COPY(buf, i, token, token_len, 512);
+    if (!INC(i, rc, 512)) goto fail;
+    if (!COPY(buf, i, token, token_len, 512)) goto fail;
     rc = _snprintf(buf + i, 512 - i, "e1:q13:announce_peer1:t%d:", tid_len);
-    INC(i, rc, 512);
-    COPY(buf, i, tid, tid_len, 512);
+    if (!INC(i, rc, 512)) goto fail;
+    if (!COPY(buf, i, tid, tid_len, 512)) goto fail;
     ADD_V(buf, i, 512);
-    rc = _snprintf(buf + i, 512 - i, "1:y1:qe"); INC(i, rc, 512);
+    rc = _snprintf(buf + i, 512 - i, "1:y1:qe");
+    if (!INC(i, rc, 512)) goto fail;
 
     return dht_send(buf, i, confirm ? 0 : MSG_CONFIRM, sa, salen);
 
@@ -2986,13 +3172,15 @@ send_peer_announced(const struct sockaddr *sa, int salen,
     char buf[512];
     int i = 0, rc;
 
-    rc = _snprintf(buf + i, 512 - i, "d1:rd2:id20:"); INC(i, rc, 512);
-    COPY(buf, i, myid, 20, 512);
+    rc = _snprintf(buf + i, 512 - i, "d1:rd2:id20:");
+    if (!INC(i, rc, 512)) goto fail;
+    if (!COPY(buf, i, myid, 20, 512)) goto fail;
     rc = _snprintf(buf + i, 512 - i, "e1:t%d:", tid_len);
-    INC(i, rc, 512);
-    COPY(buf, i, tid, tid_len, 512);
+    if (!INC(i, rc, 512)) goto fail;
+    if (!COPY(buf, i, tid, tid_len, 512)) goto fail;
     ADD_V(buf, i, 512);
-    rc = _snprintf(buf + i, 512 - i, "1:y1:re"); INC(i, rc, 512);
+    rc = _snprintf(buf + i, 512 - i, "1:y1:re");
+    if (!INC(i, rc, 512)) goto fail;
     return dht_send(buf, i, 0, sa, salen);
 
  fail:
@@ -3012,12 +3200,14 @@ send_error(const struct sockaddr *sa, int salen,
 
     rc = _snprintf(buf + i, 512 - i, "d1:eli%de%d:",
                   code, (int)strlen(message));
-    INC(i, rc, 512);
-    COPY(buf, i, message, (int)strlen(message), 512);
-    rc = _snprintf(buf + i, 512 - i, "e1:t%d:", tid_len); INC(i, rc, 512);
-    COPY(buf, i, tid, tid_len, 512);
+    if (!INC(i, rc, 512)) goto fail;
+    if (!COPY(buf, i, (const unsigned char *)message, (int)strlen(message), 512)) goto fail;
+    rc = _snprintf(buf + i, 512 - i, "e1:t%d:", tid_len);
+    if (!INC(i, rc, 512)) goto fail;
+    if (!COPY(buf, i, tid, tid_len, 512)) goto fail;
     ADD_V(buf, i, 512);
-    rc = _snprintf(buf + i, 512 - i, "1:y1:ee"); INC(i, rc, 512);
+    rc = _snprintf(buf + i, 512 - i, "1:y1:ee");
+    if (!INC(i, rc, 512)) goto fail;
     return dht_send(buf, i, 0, sa, salen);
 
  fail:
@@ -3027,9 +3217,6 @@ send_error(const struct sockaddr *sa, int salen,
 
 //*****************************************************************************
 //*****************************************************************************
-#undef CHECK
-#undef INC
-#undef COPY
 #undef ADD_V
 
 #ifdef HAVE_MEMMEM
@@ -3277,6 +3464,8 @@ parse_message(const unsigned char *buf, int buflen,
        return ANNOUNCE_PEER;
     if(dht_memmem((const char *)buf, buflen, "1:q7:message", 12))
        return MESSAGE;
+    if(dht_memmem((const char *)buf, buflen, "1:q9:broadcast", 12))
+       return BROADCAST;
     return -1;
 
  overflow:

@@ -22,7 +22,9 @@ public:
 
     void start(XBridge::SocketPtr socket);
 
-    bool sendXChatMessage(const std::vector<unsigned char> & message);
+    bool sendXBridgeMessage(const std::vector<unsigned char> & message);
+
+    bool processPacket(XBridgePacketPtr packet);
 
 private:
     void disconnect();
@@ -43,11 +45,19 @@ private:
 
     bool encryptPacket(XBridgePacketPtr packet);
     bool decryptPacket(XBridgePacketPtr packet);
-    bool processPacket(XBridgePacketPtr packet);
 
     bool processInvalid(XBridgePacketPtr packet);
     bool processAnnounceAddresses(XBridgePacketPtr packet);
-    bool processXChatMessage(XBridgePacketPtr packet);
+    bool processXBridgeMessage(XBridgePacketPtr packet);
+    bool processXBridgeBroadcastMessage(XBridgePacketPtr packet);
+
+    bool processTransaction(XBridgePacketPtr packet);
+    bool processTransactionHoldApply(XBridgePacketPtr packet);
+    bool processTransactionPayApply(XBridgePacketPtr packet);
+    bool processTransactionCommitApply(XBridgePacketPtr packet);
+    bool processTransactionCancel(XBridgePacketPtr packet);
+
+    bool processBitcoinTransactionHash(XBridgePacketPtr packet);
 
 private:
     XBridge::SocketPtr m_socket;

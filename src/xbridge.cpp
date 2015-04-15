@@ -3,11 +3,17 @@
 
 #include "xbridge.h"
 #include "xbridgesession.h"
-#include "logger.h"
+#include "xbridgeapp.h"
+#include "util/logger.h"
+
+#include <boost/date_time/posix_time/posix_time.hpp>
 
 //*****************************************************************************
 //*****************************************************************************
 XBridge::XBridge()
+    : m_timerIoWork(m_timerIo)
+    , m_timerThread(boost::bind(&boost::asio::io_service::run, &m_timerIo))
+    , m_timer(m_timerIo, boost::posix_time::seconds(TIMER_INTERVAL))
 {
     try
     {
@@ -29,6 +35,9 @@ XBridge::XBridge()
                                 (*m_services.front(), ep));
 
         LOG() << "xbridge service listen at port " << LISTEN_PORT;
+
+        m_timer.async_wait(boost::bind(&XBridge::onTimer, this));
+
     }
     catch (std::exception & e)
     {
@@ -49,6 +58,9 @@ void XBridge::run()
 //*****************************************************************************
 void XBridge::stop()
 {
+    m_timer.cancel();
+    m_timerIo.stop();
+
     for (auto i = m_services.begin(); i != m_services.end(); ++i)
     {
         (*i)->stop();
@@ -89,4 +101,20 @@ void XBridge::accept(XBridge::SocketPtr socket,
     // create session for client
     XBridgeSessionPtr session(new XBridgeSession);
     session->start(socket);
+}
+
+//******************************************************************************
+//******************************************************************************
+void XBridge::onTimer()
+{
+    // DEBUG_TRACE();
+
+    XBridgeApp * app = qobject_cast<XBridgeApp *>(qApp);
+    if (app)
+    {
+        app->onSendListOfWallets();
+    }
+
+    m_timer.expires_at(m_timer.expires_at() + boost::posix_time::seconds(TIMER_INTERVAL));
+    m_timer.async_wait(boost::bind(&XBridge::onTimer, this));
 }
